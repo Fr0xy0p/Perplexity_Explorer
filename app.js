@@ -1,31 +1,107 @@
-import { VERIFIED_SAMPLES, SANDBOX_PRESETS, QUIZ_DATA, CONCEPTS_DATA } from "./data.js";
+import {
+  SUPPORTED_MODELS,
+  VERIFIED_SAMPLES,
+  CONTEXT_EXPERIMENTS,
+  RACE_PROMPTS,
+  SANDBOX_PRESETS,
+  QUIZ_DATA,
+  CONCEPTS_DATA
+} from "./data.js";
 
 /* ============================================================================
-   1. INITIALIZATION, THEME & NAVIGATION
+   1. DOM REFERENCES & STORAGE HELPERS
    ============================================================================ */
 const protocolBanner = document.getElementById("protocol-banner");
+const themeToggleBtn = document.getElementById("theme-toggle");
+const themeIcon = document.getElementById("theme-icon");
+const viewTabs = document.querySelectorAll(".view-tab");
+const viewPanels = document.querySelectorAll(".view-panel");
+
+const modelSelect = document.getElementById("model-select");
+const statusDot = document.getElementById("status-dot");
+const statusText = document.getElementById("status-text");
+const cacheBadge = document.getElementById("cache-badge");
+const analyzerEyebrow = document.getElementById("analyzer-eyebrow");
+const modelCallout = document.getElementById("model-callout");
+const calloutText = document.getElementById("callout-text");
+const calloutPct = document.getElementById("callout-pct");
+const loadProgressFill = document.getElementById("load-progress-fill");
+const errorBox = document.getElementById("error-box");
+
+const sentenceInput = document.getElementById("sentence-input");
+const sentenceInputB = document.getElementById("sentence-input-b");
+const autoAnalyzeToggle = document.getElementById("auto-analyze-toggle");
+const tempSlider = document.getElementById("temp-slider");
+const topkSlider = document.getElementById("topk-slider");
+const toppSlider = document.getElementById("topp-slider");
+const btnToggleCompare = document.getElementById("btn-toggle-compare");
+const compareBox = document.getElementById("compare-box");
+const compareResult = document.getElementById("compare-result");
+const expRow = document.getElementById("context-exp-row");
+const btnShareLink = document.getElementById("btn-share-link");
+
+const visualSlider = document.getElementById("visual-slider");
+const curvePath = document.getElementById("ppl-curve-path");
+const curveDot = document.getElementById("ppl-curve-dot");
+
+const xrayInput = document.getElementById("xray-input");
+const xrayTokens = document.getElementById("xray-tokens");
+const xrayStats = document.getElementById("xray-stats");
+const xrayBadge = document.getElementById("xray-mode-badge");
+
+const qTextEl = document.getElementById("quiz-question");
+const qOptsEl = document.getElementById("quiz-options");
+const qFeedbackEl = document.getElementById("quiz-feedback");
+const qProgressText = document.getElementById("quiz-progress-text");
+const qProgressFill = document.getElementById("quiz-progress-fill");
+const qScoreEl = document.getElementById("quiz-score");
+const qStreakEl = document.getElementById("quiz-streak");
+const btnNextQ = document.getElementById("btn-next-question");
+
+const racePresetsEl = document.getElementById("race-presets");
+const racePrefixInput = document.getElementById("race-prefix-input");
+const raceContextDisplay = document.getElementById("race-context-display");
+const raceGuessInput = document.getElementById("race-guess-input");
+const raceRoundBadge = document.getElementById("race-round-badge");
+const raceHumanPplEl = document.getElementById("race-human-ppl");
+const raceAiPplEl = document.getElementById("race-ai-ppl");
+const raceFeedbackEl = document.getElementById("race-round-feedback");
+const raceHistoryEl = document.getElementById("race-history-list");
+
+function readStorage(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStorage(key, val) {
+  try {
+    localStorage.setItem(key, val);
+  } catch {
+    // Ignore storage quota or sandbox restrictions
+  }
+}
+
+/* ============================================================================
+   2. THEME & NAVIGATION
+   ============================================================================ */
 if (window.location.protocol === "file:") {
   protocolBanner.hidden = false;
 }
 
-const themeToggleBtn = document.getElementById("theme-toggle");
-const themeIcon = document.getElementById("theme-icon");
-
 function applyTheme(theme) {
   document.documentElement.setAttribute("data-theme", theme);
   themeIcon.textContent = theme === "dark" ? "☀" : "☾";
-  localStorage.setItem("perplexity-lab-theme", theme);
+  writeStorage("perplexity-lab-theme", theme);
 }
 
-applyTheme(localStorage.getItem("perplexity-lab-theme") || "light");
-
+applyTheme(readStorage("perplexity-lab-theme", "light"));
 themeToggleBtn.addEventListener("click", () => {
   const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
   applyTheme(next);
 });
-
-const viewTabs = document.querySelectorAll(".view-tab");
-const viewPanels = document.querySelectorAll(".view-panel");
 
 viewTabs.forEach((tab) => {
   tab.addEventListener("click", () => {
@@ -44,25 +120,26 @@ viewTabs.forEach((tab) => {
 });
 
 /* ============================================================================
-   2. MODEL ENGINE (LAZY DYNAMIC TRANSFORMERS.JS DISTILGPT-2)
+   3. MULTI-MODEL ENGINE (WITH SHARED IN-FLIGHT PROMISE) & CACHE INDICATOR
    ============================================================================ */
 let transformersMod = null;
-let tokenizer = null;
-let model = null;
-let isModelLoading = false;
-let isModelReady = false;
+const loadedEngines = {};
+const loadingPromises = {};
+let activeModelId = "Xenova/distilgpt2";
 
 let currentAnalysis = null;
 let selectedTokenIdx = 0;
 let currentTemperature = 1.0;
+let currentTopK = 8;
+let currentTopP = 1.0;
 
-const statusDot = document.getElementById("status-dot");
-const statusText = document.getElementById("status-text");
-const modelCallout = document.getElementById("model-callout");
-const calloutText = document.getElementById("callout-text");
-const calloutPct = document.getElementById("callout-pct");
-const loadProgressFill = document.getElementById("load-progress-fill");
-const errorBox = document.getElementById("error-box");
+function isActiveModelReady() {
+  return Boolean(loadedEngines[activeModelId]);
+}
+
+function getActiveEngine() {
+  return loadedEngines[activeModelId] || null;
+}
 
 function setEngineStatus(state, label) {
   statusDot.className = `status-dot ${state}`;
@@ -76,57 +153,6 @@ function setProgress(pct, text) {
   if (text) calloutText.textContent = text;
 }
 
-async function ensureModelLoaded() {
-  if (isModelReady) return true;
-  if (isModelLoading) return false;
-
-  isModelLoading = true;
-  setEngineStatus("loading", "Loading DistilGPT-2...");
-  modelCallout.hidden = false;
-  setProgress(8, "Loading Transformers.js runtime...");
-
-  try {
-    transformersMod = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3");
-    const { AutoTokenizer, AutoModelForCausalLM } = transformersMod;
-
-    setProgress(18, "Downloading DistilGPT-2 BPE tokenizer...");
-    tokenizer = await AutoTokenizer.from_pretrained("Xenova/distilgpt2", {
-      progress_callback: (p) => {
-        if (p.status === "progress" && typeof p.progress === "number") {
-          setProgress(18 + p.progress * 0.22);
-        }
-      }
-    });
-
-    setProgress(42, "Downloading DistilGPT-2 quantized ONNX weights...");
-    model = await AutoModelForCausalLM.from_pretrained("Xenova/distilgpt2", {
-      dtype: "q8",
-      progress_callback: (p) => {
-        if (p.status === "progress" && typeof p.progress === "number") {
-          setProgress(42 + p.progress * 0.56);
-        }
-      }
-    });
-
-    setProgress(100, "DistilGPT-2 ready in browser.");
-    isModelReady = true;
-    isModelLoading = false;
-    setEngineStatus("ready", "DistilGPT-2 Ready");
-    updateXRay();
-    setTimeout(() => {
-      modelCallout.hidden = true;
-    }, 2600);
-    return true;
-  } catch (err) {
-    console.error("Model load error:", err);
-    isModelLoading = false;
-    setEngineStatus("error", "Model Load Failed");
-    modelCallout.hidden = true;
-    showError(`Could not load in-browser DistilGPT-2 (${err.message}). Verified sample snapshots remain available.`);
-    return false;
-  }
-}
-
 function showError(msg) {
   errorBox.textContent = msg;
   errorBox.hidden = false;
@@ -137,8 +163,99 @@ function clearError() {
   errorBox.textContent = "";
 }
 
+async function refreshCacheBadge() {
+  if (!("caches" in window)) {
+    cacheBadge.hidden = true;
+    return;
+  }
+  try {
+    const cache = await caches.open("transformers-cache");
+    const keys = await cache.keys();
+    const slug = activeModelId.split("/")[1];
+    const hasWeights = keys.some((req) => req.url.includes(slug));
+    cacheBadge.hidden = !hasWeights;
+  } catch {
+    cacheBadge.hidden = true;
+  }
+}
+
+function updateModelHeaderUI() {
+  const meta = SUPPORTED_MODELS[activeModelId];
+  analyzerEyebrow.textContent = `Real-Time Causal Inference · ${meta.label} (${meta.vocabSize.toLocaleString()} shared BPE vocab)`;
+  if (isActiveModelReady()) {
+    setEngineStatus("ready", `${meta.short} Ready`);
+  } else if (activeModelId === "Xenova/distilgpt2") {
+    setEngineStatus("", "Preview Mode");
+  } else {
+    setEngineStatus("", `${meta.short} Not Loaded`);
+  }
+  refreshCacheBadge();
+  updateXRay();
+}
+
+modelSelect.addEventListener("change", () => {
+  activeModelId = modelSelect.value;
+  updateModelHeaderUI();
+});
+
+async function ensureModelLoaded(targetModelId = activeModelId) {
+  if (loadedEngines[targetModelId]) return true;
+  if (loadingPromises[targetModelId]) return loadingPromises[targetModelId];
+
+  const meta = SUPPORTED_MODELS[targetModelId];
+  loadingPromises[targetModelId] = (async () => {
+    setEngineStatus("loading", `Loading ${meta.short}...`);
+    modelCallout.hidden = false;
+    setProgress(8, `Loading Transformers.js runtime for ${meta.short}...`);
+
+    try {
+      if (!transformersMod) {
+        transformersMod = await import("https://cdn.jsdelivr.net/npm/@huggingface/transformers@3");
+      }
+      const { AutoTokenizer, AutoModelForCausalLM } = transformersMod;
+
+      setProgress(18, `Downloading ${meta.short} BPE tokenizer...`);
+      const tokenizer = await AutoTokenizer.from_pretrained(targetModelId, {
+        progress_callback: (p) => {
+          if (p.status === "progress" && typeof p.progress === "number") {
+            setProgress(18 + p.progress * 0.22);
+          }
+        }
+      });
+
+      setProgress(42, `Downloading ${meta.short} quantized ONNX weights...`);
+      const model = await AutoModelForCausalLM.from_pretrained(targetModelId, {
+        dtype: "q8",
+        progress_callback: (p) => {
+          if (p.status === "progress" && typeof p.progress === "number") {
+            setProgress(42 + p.progress * 0.56);
+          }
+        }
+      });
+
+      loadedEngines[targetModelId] = { tokenizer, model };
+      setProgress(100, `${meta.short} ready in browser.`);
+      updateModelHeaderUI();
+      setTimeout(() => {
+        modelCallout.hidden = true;
+      }, 2200);
+      return true;
+    } catch (err) {
+      console.error("Model load error:", err);
+      setEngineStatus("error", "Model Load Failed");
+      modelCallout.hidden = true;
+      showError(`Could not load ${meta.short} (${err.message}).`);
+      return false;
+    } finally {
+      delete loadingPromises[targetModelId];
+    }
+  })();
+
+  return loadingPromises[targetModelId];
+}
+
 /* ============================================================================
-   3. MATH HELPERS & CAUSAL INFERENCE
+   4. MATH HELPERS & CAUSAL INFERENCE
    ============================================================================ */
 function stableSoftmax(logits, temperature = 1.0) {
   const invT = 1 / Math.max(0.05, temperature);
@@ -168,25 +285,57 @@ function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-async function runLiveInference(sentenceText) {
-  const { Tensor } = transformersMod;
-  const encoded = tokenizer(sentenceText);
-  const rawIds = Array.from(encoded.input_ids.data).map(Number);
-
-  if (rawIds.length === 0) {
-    throw new Error("Input produced zero tokens.");
+function extractTopKFromLogits(logits, tokenizer, temperature, k = 15) {
+  const probs = stableSoftmax(logits, temperature);
+  const top = [];
+  for (let i = 0; i < probs.length; i++) {
+    const p = probs[i];
+    if (top.length < k || p > top[top.length - 1].probability) {
+      top.push({ tokenId: i, probability: p });
+      top.sort((a, b) => b.probability - a.probability);
+      if (top.length > k) top.pop();
+    }
   }
+  return top.map((item, idx) => {
+    const text = tokenizer.decode([item.tokenId]);
+    return {
+      rank: idx + 1,
+      tokenId: item.tokenId,
+      text,
+      displaySymbol: formatDisplayToken(text),
+      probability: item.probability
+    };
+  });
+}
 
-  const bosId = 50256; // <|endoftext|>
+async function forwardCausalLM(engine, rawIds, targetModelId) {
+  const { Tensor } = transformersMod;
+  const bosId = 50256;
   const inputIds = [bosId, ...rawIds];
+  if (inputIds.length > 1024) {
+    throw new Error(`Input exceeds GPT-2's 1024-token context limit (${inputIds.length} tokens).`);
+  }
 
   const tensorInput = new Tensor("int64", BigInt64Array.from(inputIds.map(BigInt)), [1, inputIds.length]);
   const tensorMask = new Tensor("int64", BigInt64Array.from(inputIds.map(() => 1n)), [1, inputIds.length]);
+  const out = await engine.model({ input_ids: tensorInput, attention_mask: tensorMask });
+  if (!out || !out.logits || !out.logits.data) {
+    throw new Error("Model forward pass returned empty logits.");
+  }
 
-  const out = await model({ input_ids: tensorInput, attention_mask: tensorMask });
-  const vocabSize = 50257;
-  const logitsData = out.logits.data;
+  const vocabSize = out.logits.dims?.[2] ?? SUPPORTED_MODELS[targetModelId].vocabSize;
+  return { logitsData: out.logits.data, vocabSize };
+}
 
+async function runLiveInference(sentenceText, targetModelId = activeModelId) {
+  const engine = loadedEngines[targetModelId];
+  const { tokenizer } = engine;
+
+  const encoded = tokenizer(sentenceText);
+  const rawIds = Array.from(encoded.input_ids.data).map(Number);
+  if (rawIds.length === 0) throw new Error("Input produced zero tokens.");
+
+  const { logitsData, vocabSize } = await forwardCausalLM(engine, rawIds, targetModelId);
   const tokens = [];
   let sumLogProbs = 0;
 
@@ -212,62 +361,40 @@ async function runLiveInference(sentenceText) {
 
   const lastRowOffset = rawIds.length * vocabSize;
   const lastLogits = new Float32Array(logitsData.subarray(lastRowOffset, lastRowOffset + vocabSize));
-  const top8Next = extractTopKFromLogits(lastLogits, 1.0, 8);
+  const topCandidates = extractTopKFromLogits(lastLogits, tokenizer, 1.0, 15);
 
   const crossEntropy = -sumLogProbs / rawIds.length;
   const perplexity = Math.exp(crossEntropy);
 
   return {
+    modelId: targetModelId,
     sentence: sentenceText,
     tokens,
     perplexity,
     crossEntropy,
-    top8Next,
+    top8Next: topCandidates,
     rawLastLogits: lastLogits,
     isLive: true
   };
-}
-
-function extractTopKFromLogits(logits, temperature, k = 8) {
-  const probs = stableSoftmax(logits, temperature);
-  const top = [];
-  for (let i = 0; i < probs.length; i++) {
-    const p = probs[i];
-    if (top.length < k || p > top[top.length - 1].probability) {
-      top.push({ tokenId: i, probability: p });
-      top.sort((a, b) => b.probability - a.probability);
-      if (top.length > k) top.pop();
-    }
-  }
-  return top.map((item, idx) => {
-    const text = tokenizer.decode([item.tokenId]);
-    return {
-      rank: idx + 1,
-      tokenId: item.tokenId,
-      text,
-      displaySymbol: formatDisplayToken(text),
-      probability: item.probability
-    };
-  });
 }
 
 async function evaluateSequence(text, allowPreviewFallback = true) {
   const clean = text.trim();
   if (!clean) throw new Error("Please enter a non-empty sentence.");
 
-  if (!isModelReady && allowPreviewFallback && VERIFIED_SAMPLES[clean]) {
-    return { ...VERIFIED_SAMPLES[clean], sentence: clean, isLive: false };
+  if (!isActiveModelReady() && allowPreviewFallback && activeModelId === "Xenova/distilgpt2" && VERIFIED_SAMPLES[clean]) {
+    return { ...VERIFIED_SAMPLES[clean], modelId: "Xenova/distilgpt2", sentence: clean, isLive: false };
   }
 
-  const loaded = await ensureModelLoaded();
+  const loaded = await ensureModelLoaded(activeModelId);
   if (!loaded) {
-    if (VERIFIED_SAMPLES[clean]) {
-      return { ...VERIFIED_SAMPLES[clean], sentence: clean, isLive: false };
+    if (activeModelId === "Xenova/distilgpt2" && VERIFIED_SAMPLES[clean]) {
+      return { ...VERIFIED_SAMPLES[clean], modelId: "Xenova/distilgpt2", sentence: clean, isLive: false };
     }
-    throw new Error("Live DistilGPT-2 model is unavailable.");
+    throw new Error("Live model could not be loaded.");
   }
 
-  return await runLiveInference(clean);
+  return await runLiveInference(clean, activeModelId);
 }
 
 async function analyzeSentence(sentenceText) {
@@ -278,25 +405,24 @@ async function analyzeSentence(sentenceText) {
   }
   clearError();
 
-  // Instant verified snapshot preview if model is not loaded yet
-  if (!isModelReady && VERIFIED_SAMPLES[clean]) {
-    renderAnalysis({ ...VERIFIED_SAMPLES[clean], sentence: clean, isLive: false });
+  if (!isActiveModelReady() && activeModelId === "Xenova/distilgpt2" && VERIFIED_SAMPLES[clean]) {
+    renderAnalysis({ ...VERIFIED_SAMPLES[clean], modelId: "Xenova/distilgpt2", sentence: clean, isLive: false });
     return;
   }
 
-  setEngineStatus("analyzing", "Running inference...");
+  setEngineStatus("analyzing", `Analyzing (${SUPPORTED_MODELS[activeModelId].short})...`);
   try {
     const result = await evaluateSequence(clean, false);
     renderAnalysis(result);
-    setEngineStatus("ready", "DistilGPT-2 Ready");
+    updateModelHeaderUI();
   } catch (err) {
-    if (!isModelReady) setEngineStatus("error", "Model Unavailable");
+    if (!isActiveModelReady()) setEngineStatus("error", "Model Unavailable");
     showError(err.message);
   }
 }
 
 /* ============================================================================
-   4. RENDER LIVE ANALYZER WORKBENCH
+   5. RENDER LIVE ANALYZER WORKBENCH + SURPRISAL SPARKLINE + SAMPLING
    ============================================================================ */
 function surpriseLevel(prob) {
   const bits = -Math.log2(Math.max(1e-12, prob));
@@ -311,6 +437,7 @@ function renderAnalysis(data) {
   if (selectedTokenIdx < 0) selectedTokenIdx = 0;
 
   renderHeatmapAndTable(data.tokens);
+  renderSurprisalChart(data.tokens);
   selectToken(selectedTokenIdx);
   renderGaugeAndMath(data);
   renderNextPredictions();
@@ -329,7 +456,6 @@ function renderHeatmapAndTable(tokens) {
     const pct = (t.probability * 100).toFixed(2);
     const bits = (-Math.log2(Math.max(1e-12, t.probability))).toFixed(2);
 
-    // Heatmap chip
     const chip = document.createElement("button");
     chip.type = "button";
     chip.className = `hm-token surprise-${level}`;
@@ -341,7 +467,6 @@ function renderHeatmapAndTable(tokens) {
     chip.addEventListener("click", () => selectToken(idx));
     heatmap.appendChild(chip);
 
-    // Table row
     const tr = document.createElement("tr");
     tr.dataset.idx = String(idx);
     tr.innerHTML = `
@@ -362,6 +487,76 @@ function renderHeatmapAndTable(tokens) {
   });
 }
 
+function renderSurprisalChart(tokens) {
+  const svg = document.getElementById("surprisal-svg");
+  const peakNote = document.getElementById("peak-surprise-note");
+  if (!tokens.length) {
+    svg.innerHTML = "";
+    peakNote.textContent = "Peak: —";
+    return;
+  }
+
+  const W = 640;
+  const H = 120;
+  const padL = 34;
+  const padR = 18;
+  const padT = 14;
+  const padB = 22;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+
+  const bitsArr = tokens.map((t) => -Math.log2(Math.max(1e-12, t.probability)));
+  const maxBits = Math.max(12, Math.ceil(Math.max(...bitsArr) / 2) * 2);
+
+  let peakIdx = 0;
+  bitsArr.forEach((b, i) => { if (b > bitsArr[peakIdx]) peakIdx = i; });
+  peakNote.textContent = `Peak: ${tokens[peakIdx].displaySymbol} (${bitsArr[peakIdx].toFixed(2)} bits)`;
+
+  const coords = tokens.map((t, i) => {
+    const x = tokens.length === 1 ? padL + plotW / 2 : padL + (i / (tokens.length - 1)) * plotW;
+    const y = padT + (1 - bitsArr[i] / maxBits) * plotH;
+    return { x, y, bits: bitsArr[i], token: t, idx: i };
+  });
+
+  const gridLines = [0, 5, 10, maxBits].filter((v, idx, arr) => v <= maxBits && arr.indexOf(v) === idx)
+    .map((val) => {
+      const y = padT + (1 - val / maxBits) * plotH;
+      return `
+        <line x1="${padL}" y1="${y.toFixed(1)}" x2="${W - padR}" y2="${y.toFixed(1)}" stroke="var(--border)" stroke-dasharray="3 3" stroke-width="1"/>
+        <text x="${padL - 6}" y="${(y + 3).toFixed(1)}" text-anchor="end" class="svg-label">${val}b</text>
+      `;
+    }).join("");
+
+  const polyPts = coords.map((c) => `${c.x.toFixed(1)},${c.y.toFixed(1)}`).join(" ");
+  const areaPts = coords.length > 1
+    ? `${coords[0].x.toFixed(1)},${padT + plotH} ${polyPts} ${coords[coords.length - 1].x.toFixed(1)},${padT + plotH}`
+    : "";
+
+  const nodes = coords.map((c) => {
+    const level = surpriseLevel(c.token.probability);
+    const fill = level === "low" ? "var(--accent)" : level === "mid" ? "var(--warn)" : "var(--danger)";
+    return `
+      <circle class="spark-node" data-idx="${c.idx}" cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="4.5" fill="${fill}" stroke="var(--surface)" stroke-width="1.5">
+        <title>${escapeHtml(c.token.displaySymbol)}: ${c.bits.toFixed(2)} bits</title>
+      </circle>
+      <text x="${c.x.toFixed(1)}" y="${H - 5}" text-anchor="middle" class="svg-label">#${c.token.index}</text>
+    `;
+  }).join("");
+
+  const activeCoord = coords[selectedTokenIdx] || coords[0];
+  svg.innerHTML = `
+    ${gridLines}
+    ${areaPts ? `<polygon points="${areaPts}" fill="var(--accent-soft)" opacity="0.55"/>` : ""}
+    ${coords.length > 1 ? `<polyline points="${polyPts}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>` : ""}
+    <circle id="spark-active-ring" cx="${activeCoord.x.toFixed(1)}" cy="${activeCoord.y.toFixed(1)}" r="8" fill="none" stroke="var(--cobalt)" stroke-width="2"/>
+    ${nodes}
+  `;
+
+  svg.querySelectorAll(".spark-node").forEach((node) => {
+    node.addEventListener("click", () => selectToken(Number(node.dataset.idx)));
+  });
+}
+
 function selectToken(idx) {
   if (!currentAnalysis || !currentAnalysis.tokens[idx]) return;
   selectedTokenIdx = idx;
@@ -373,6 +568,13 @@ function selectToken(idx) {
   document.querySelectorAll("#tokens-table-body tr").forEach((el) => {
     el.classList.toggle("selected", Number(el.dataset.idx) === idx);
   });
+
+  const activeNode = document.querySelector(`.spark-node[data-idx="${idx}"]`);
+  const ring = document.getElementById("spark-active-ring");
+  if (activeNode && ring) {
+    ring.setAttribute("cx", activeNode.getAttribute("cx"));
+    ring.setAttribute("cy", activeNode.getAttribute("cy"));
+  }
 
   const bits = -Math.log2(Math.max(1e-12, t.probability));
   document.getElementById("insp-token").textContent = t.displaySymbol;
@@ -394,15 +596,14 @@ function selectToken(idx) {
 }
 
 function renderGaugeAndMath(data) {
-  const ppl = data.perplexity;
-  const ceNats = data.crossEntropy;
+  const ppl = Number.isFinite(data.perplexity) ? data.perplexity : 10000;
+  const ceNats = Number.isFinite(data.crossEntropy) ? data.crossEntropy : Math.log(ppl);
   const ceBits = ceNats / Math.LN2;
 
   document.getElementById("ppl-display").textContent = ppl >= 1000 ? ppl.toFixed(0) : ppl.toFixed(2);
   document.getElementById("ce-nats").textContent = ceNats.toFixed(3);
   document.getElementById("ce-bits").textContent = ceBits.toFixed(3);
 
-  // Logarithmic gauge mapping: PPL 1 -> 0, PPL 10000 -> 1
   const norm = Math.max(0, Math.min(1, Math.log10(Math.max(1, ppl)) / 4));
   const arcLen = 301.6;
   document.getElementById("gauge-arc").setAttribute("stroke-dashoffset", String(arcLen * (1 - norm)));
@@ -424,7 +625,6 @@ function renderGaugeAndMath(data) {
     badge.style.color = "var(--danger)";
   }
 
-  // 3-step breakdown
   const invs = data.tokens.map((t) => t.inverseProbability);
   const logProd = invs.reduce((acc, v) => acc + Math.log(v), 0);
   const approxProd = Math.exp(logProd);
@@ -440,32 +640,59 @@ function renderNextPredictions() {
   if (!currentAnalysis) return;
   const container = document.getElementById("top-next-container");
   const scopeNote = document.getElementById("temp-scope-note");
+  const massBadge = document.getElementById("sampling-mass-badge");
   let items;
 
-  if (currentAnalysis.isLive && currentAnalysis.rawLastLogits) {
-    items = extractTopKFromLogits(currentAnalysis.rawLastLogits, currentTemperature, 8);
-    scopeNote.textContent = `Live temperature scaling across all 50,257 DistilGPT-2 vocabulary logits (T = ${currentTemperature.toFixed(2)}).`;
+  const engine = loadedEngines[currentAnalysis.modelId];
+  if (currentAnalysis.isLive && currentAnalysis.rawLastLogits && engine) {
+    const fetchCount = Math.max(10, currentTopK);
+    items = extractTopKFromLogits(currentAnalysis.rawLastLogits, engine.tokenizer, currentTemperature, fetchCount);
+    scopeNote.textContent = `Live sampling across all 50,257 ${SUPPORTED_MODELS[currentAnalysis.modelId].short} logits (T=${currentTemperature.toFixed(2)}, K=${currentTopK}, P=${currentTopP.toFixed(2)}).`;
   } else {
-    // Scale preview top-8 probabilities via log-probs / T
-    const logProbs = currentAnalysis.top8Next.map((item) => Math.log(Math.max(1e-9, item.probability)));
-    const rescaled = stableSoftmax(logProbs, currentTemperature);
-    items = currentAnalysis.top8Next.map((item, idx) => ({
-      ...item,
-      probability: rescaled[idx]
-    })).sort((a, b) => b.probability - a.probability)
-      .map((item, idx) => ({ ...item, rank: idx + 1 }));
-    scopeNote.textContent = "Preview mode: temperature rescales top-8 snapshot. Click Run Analysis on custom text for full 50,257-vocab logits.";
+    // Preserve exact verified probabilities at T = 1.00; scale proportionally when T != 1.00
+    const rawSum = currentAnalysis.top8Next.reduce((acc, item) => acc + item.probability, 0);
+    if (Math.abs(currentTemperature - 1.0) < 1e-3) {
+      items = currentAnalysis.top8Next.map((item, idx) => ({ ...item, rank: idx + 1 }));
+    } else {
+      const logProbs = currentAnalysis.top8Next.map((item) => Math.log(Math.max(1e-9, item.probability)));
+      const rescaled = stableSoftmax(logProbs, currentTemperature);
+      items = currentAnalysis.top8Next
+        .map((item, idx) => ({ ...item, probability: rescaled[idx] * rawSum }))
+        .sort((a, b) => b.probability - a.probability)
+        .map((item, idx) => ({ ...item, rank: idx + 1 }));
+    }
+    scopeNote.textContent = "Preview mode: sampling over top-8 snapshot. Run Analysis on custom text for full 50,257-vocab logits.";
   }
 
-  container.innerHTML = "";
-  const maxP = Math.max(...items.map((i) => i.probability), 0.01);
+  let cumulative = 0;
+  let keptMass = 0;
+  let keptCount = 0;
 
-  items.forEach((item) => {
+  const annotated = items.map((item, idx) => {
+    const withinK = idx < currentTopK;
+    const withinP = idx === 0 || cumulative < currentTopP;
+    cumulative += item.probability;
+    const active = withinK && withinP;
+    if (active) {
+      keptMass += item.probability;
+      keptCount++;
+    }
+    return { ...item, active };
+  });
+
+  massBadge.textContent = `Kept: ${(keptMass * 100).toFixed(1)}% · ${keptCount} tok`;
+
+  container.innerHTML = "";
+  const maxP = Math.max(...annotated.map((i) => i.probability), 0.01);
+
+  annotated.slice(0, 12).forEach((item) => {
     const pct = (item.probability * 100).toFixed(2);
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `next-item ${item.rank === 1 ? "top-pick" : ""}`;
-    btn.title = `Append "${item.text}" to sentence and re-analyze`;
+    btn.className = `next-item ${item.rank === 1 && item.active ? "top-pick" : ""} ${item.active ? "" : "filtered-out"}`;
+    btn.title = item.active
+      ? `Append "${item.text}" to sentence and re-analyze`
+      : "Excluded by current Top-K / Top-P cutoff";
     btn.innerHTML = `
       <span class="next-rank">#${item.rank}</span>
       <span class="next-mid">
@@ -477,28 +704,39 @@ function renderNextPredictions() {
       <span class="next-pct">${pct}%</span>
     `;
     btn.addEventListener("click", () => {
-      const input = document.getElementById("sentence-input");
-      input.value = input.value + item.text;
-      document.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
-      analyzeSentence(input.value);
+      if (!item.active) return;
+      const base = item.text.startsWith(" ") ? sentenceInput.value.replace(/[ \t]+$/, "") : sentenceInput.value;
+      sentenceInput.value = base + item.text;
+      document.querySelectorAll("#view-analyzer .pill-btn[data-sentence]").forEach((b) => b.classList.remove("active"));
+      analyzeSentence(sentenceInput.value);
     });
     container.appendChild(btn);
   });
 }
 
-// Analyzer Controls
-const sentenceInput = document.getElementById("sentence-input");
-const tempSlider = document.getElementById("temp-slider");
-const tempVal = document.getElementById("temp-val");
-
+/* ============================================================================
+   6. ANALYZER CONTROLS, AUTO-ANALYZE, COMPARE EXPERIMENTS, SHARE & EXPORT
+   ============================================================================ */
 tempSlider.addEventListener("input", () => {
   currentTemperature = parseFloat(tempSlider.value);
-  tempVal.textContent = `T = ${currentTemperature.toFixed(2)}`;
+  document.getElementById("temp-val").textContent = `T = ${currentTemperature.toFixed(2)}`;
+  renderNextPredictions();
+});
+
+topkSlider.addEventListener("input", () => {
+  currentTopK = parseInt(topkSlider.value, 10);
+  document.getElementById("topk-val").textContent = `K = ${currentTopK}`;
+  renderNextPredictions();
+});
+
+toppSlider.addEventListener("input", () => {
+  currentTopP = parseFloat(toppSlider.value);
+  document.getElementById("topp-val").textContent = `P = ${currentTopP.toFixed(2)}`;
   renderNextPredictions();
 });
 
 document.getElementById("btn-calculate").addEventListener("click", () => {
-  document.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll("#view-analyzer .pill-btn[data-sentence]").forEach((b) => b.classList.remove("active"));
   analyzeSentence(sentenceInput.value);
 });
 
@@ -508,29 +746,27 @@ sentenceInput.addEventListener("keydown", (e) => {
   }
 });
 
-document.querySelectorAll(".pill-btn").forEach((btn) => {
+let autoTimer = null;
+sentenceInput.addEventListener("input", () => {
+  if (!autoAnalyzeToggle.checked) return;
+  const clean = sentenceInput.value.trim();
+  if (!clean) return;
+  if (!isActiveModelReady() && !(activeModelId === "Xenova/distilgpt2" && VERIFIED_SAMPLES[clean])) return;
+
+  clearTimeout(autoTimer);
+  autoTimer = setTimeout(() => analyzeSentence(clean), 450);
+});
+
+document.querySelectorAll("#view-analyzer .pill-btn[data-sentence]").forEach((btn) => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("#view-analyzer .pill-btn[data-sentence]").forEach((b) => b.classList.remove("active"));
     btn.classList.add("active");
     sentenceInput.value = btn.dataset.sentence;
     analyzeSentence(btn.dataset.sentence);
   });
 });
 
-// Compare A vs B
-const btnToggleCompare = document.getElementById("btn-toggle-compare");
-const compareBox = document.getElementById("compare-box");
-const compareResult = document.getElementById("compare-result");
-
-btnToggleCompare.addEventListener("click", () => {
-  const isOpen = !compareBox.hidden;
-  compareBox.hidden = isOpen;
-  btnToggleCompare.setAttribute("aria-pressed", String(!isOpen));
-});
-
-document.getElementById("btn-compare").addEventListener("click", async () => {
-  const textA = sentenceInput.value.trim();
-  const textB = document.getElementById("sentence-input-b").value.trim();
+async function runCompare(textA, textB, insight = "") {
   if (!textA || !textB) {
     showError("Enter both Sequence A and Sequence B to compare.");
     return;
@@ -548,17 +784,149 @@ document.getElementById("btn-compare").addEventListener("click", async () => {
     compareResult.innerHTML = `
       <div><span class="muted-xs mono">SEQUENCE A PPL</span><br><strong class="mono">${resA.perplexity.toFixed(2)}</strong></div>
       <div><span class="muted-xs mono">SEQUENCE B PPL</span><br><strong class="mono">${resB.perplexity.toFixed(2)}</strong></div>
-      <div><span class="muted-xs mono">COMPARISON</span><br><span>${verdict}</span></div>
+      <div><span class="muted-xs mono">COMPARISON</span><br><span>${verdict}${insight ? `<br><span class="muted-xs">${escapeHtml(insight)}</span>` : ""}</span></div>
     `;
     compareResult.hidden = false;
-    setEngineStatus(isModelReady ? "ready" : "", isModelReady ? "DistilGPT-2 Ready" : "Preview Mode");
+    updateModelHeaderUI();
   } catch (err) {
     showError(err.message);
   }
+}
+
+CONTEXT_EXPERIMENTS.forEach((exp) => {
+  const pill = document.createElement("button");
+  pill.type = "button";
+  pill.className = "pill-btn";
+  pill.textContent = exp.label;
+  pill.title = exp.insight;
+  pill.addEventListener("click", () => {
+    sentenceInput.value = exp.a;
+    sentenceInputB.value = exp.b;
+    runCompare(exp.a, exp.b, exp.insight);
+  });
+  expRow.appendChild(pill);
+});
+
+btnToggleCompare.addEventListener("click", () => {
+  const isOpen = !compareBox.hidden;
+  compareBox.hidden = isOpen;
+  btnToggleCompare.setAttribute("aria-pressed", String(!isOpen));
+});
+
+document.getElementById("btn-compare").addEventListener("click", () => {
+  runCompare(sentenceInput.value.trim(), sentenceInputB.value.trim());
+});
+
+btnShareLink.addEventListener("click", async () => {
+  const params = new URLSearchParams();
+  params.set("a", sentenceInput.value);
+  if (!compareBox.hidden && sentenceInputB.value.trim()) {
+    params.set("b", sentenceInputB.value);
+  }
+  params.set("m", activeModelId);
+  params.set("t", currentTemperature.toFixed(2));
+  params.set("k", String(currentTopK));
+  params.set("p", currentTopP.toFixed(2));
+
+  const shareUrl = `${window.location.origin}${window.location.pathname}?${params.toString()}`;
+  try {
+    window.history.replaceState({}, "", `?${params.toString()}`);
+  } catch {
+    // Ignore history restrictions on opaque origins
+  }
+
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(shareUrl);
+      btnShareLink.textContent = "Copied Link ✓";
+    } else {
+      btnShareLink.textContent = "URL Updated ✓";
+    }
+  } catch {
+    btnShareLink.textContent = "URL Updated ✓";
+  }
+  setTimeout(() => { btnShareLink.textContent = "🔗 Copy Share Link"; }, 2000);
+});
+
+function hydrateFromUrlParams() {
+  const params = new URLSearchParams(window.location.search);
+  if (params.has("m") && SUPPORTED_MODELS[params.get("m")]) {
+    activeModelId = params.get("m");
+    modelSelect.value = activeModelId;
+  }
+  if (params.has("a")) {
+    sentenceInput.value = params.get("a");
+  }
+  if (params.has("b")) {
+    sentenceInputB.value = params.get("b");
+    compareBox.hidden = false;
+    btnToggleCompare.setAttribute("aria-pressed", "true");
+  }
+  if (params.has("t")) {
+    const t = Math.min(2.0, Math.max(0.2, parseFloat(params.get("t")) || 1.0));
+    currentTemperature = t;
+    tempSlider.value = String(t);
+    document.getElementById("temp-val").textContent = `T = ${t.toFixed(2)}`;
+  }
+  if (params.has("k")) {
+    const k = Math.min(15, Math.max(1, parseInt(params.get("k"), 10) || 8));
+    currentTopK = k;
+    topkSlider.value = String(k);
+    document.getElementById("topk-val").textContent = `K = ${k}`;
+  }
+  if (params.has("p")) {
+    const p = Math.min(1.0, Math.max(0.1, parseFloat(params.get("p")) || 1.0));
+    currentTopP = p;
+    toppSlider.value = String(p);
+    document.getElementById("topp-val").textContent = `P = ${p.toFixed(2)}`;
+  }
+}
+
+function downloadFile(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById("btn-export-json").addEventListener("click", () => {
+  if (!currentAnalysis) return;
+  const payload = {
+    model: currentAnalysis.modelId || activeModelId,
+    sentence: currentAnalysis.sentence,
+    perplexity: currentAnalysis.perplexity,
+    crossEntropyNats: currentAnalysis.crossEntropy,
+    tokens: currentAnalysis.tokens.map((t) => ({
+      index: t.index,
+      token: t.text,
+      tokenId: t.tokenId,
+      probability: t.probability,
+      inverseProbability: t.inverseProbability,
+      surprisalBits: -Math.log2(Math.max(1e-12, t.probability)),
+      context: t.context
+    }))
+  };
+  downloadFile("perplexity-analysis.json", JSON.stringify(payload, null, 2), "application/json");
+});
+
+document.getElementById("btn-export-csv").addEventListener("click", () => {
+  if (!currentAnalysis) return;
+  const header = "index,token,token_id,probability,inverse_prob,surprisal_bits\n";
+  const rows = currentAnalysis.tokens.map((t) => {
+    const bits = (-Math.log2(Math.max(1e-12, t.probability))).toFixed(4);
+    const safeTok = `"${t.text.replace(/"/g, '""')}"`;
+    return `${t.index},${safeTok},${t.tokenId},${t.probability.toExponential(6)},${t.inverseProbability.toFixed(2)},${bits}`;
+  }).join("\n");
+  downloadFile("perplexity-tokens.csv", header + rows, "text/csv");
 });
 
 /* ============================================================================
-   5. VIEW 02: SANDBOX & BRANCHING VISUALIZER
+   7. VIEW 02: SANDBOX & BRANCHING VISUALIZER
    ============================================================================ */
 let simTokens = SANDBOX_PRESETS["preset-a"].tokens.map((t) => ({ ...t }));
 
@@ -598,32 +966,27 @@ function renderSimTable() {
   document.getElementById("sim-log-ppl-result").textContent = logPPL.toFixed(2);
 
   container.querySelectorAll(".sim-name").forEach((inp) => {
-    inp.addEventListener("input", (e) => {
-      simTokens[Number(e.target.dataset.idx)].text = e.target.value;
-    });
+    inp.addEventListener("input", () => { simTokens[Number(inp.dataset.idx)].text = inp.value; });
   });
-
   container.querySelectorAll(".sim-range").forEach((rng) => {
-    rng.addEventListener("input", (e) => {
-      simTokens[Number(e.target.dataset.idx)].prob = parseFloat(e.target.value);
+    rng.addEventListener("input", () => {
+      simTokens[Number(rng.dataset.idx)].prob = parseFloat(rng.value);
       renderSimTable();
     });
   });
-
   container.querySelectorAll(".sim-num").forEach((num) => {
-    num.addEventListener("change", (e) => {
-      let val = parseFloat(e.target.value);
+    num.addEventListener("change", () => {
+      let val = parseFloat(num.value);
       if (Number.isNaN(val) || val <= 0) val = 0.01;
       if (val > 1) val = 1;
-      simTokens[Number(e.target.dataset.idx)].prob = val;
+      simTokens[Number(num.dataset.idx)].prob = val;
       renderSimTable();
     });
   });
-
   container.querySelectorAll(".btn-del").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
+    btn.addEventListener("click", () => {
       if (simTokens.length <= 1) return;
-      simTokens.splice(Number(e.target.dataset.idx), 1);
+      simTokens.splice(Number(btn.dataset.idx), 1);
       renderSimTable();
     });
   });
@@ -644,13 +1007,7 @@ Object.keys(SANDBOX_PRESETS).forEach((presetId) => {
   });
 });
 
-// Branching Factor SVG Curve & Dots
-const visualSlider = document.getElementById("visual-slider");
-const curvePath = document.getElementById("ppl-curve-path");
-const curveDot = document.getElementById("ppl-curve-dot");
-
 function buildCurvePath() {
-  // X: P from 0.05..1.00 mapped to 40..340; Y: PPL = 1/P capped at 20 mapped to 155..20
   const pts = [];
   for (let p = 0.05; p <= 1.001; p += 0.025) {
     const x = 40 + ((p - 0.05) / 0.95) * 300;
@@ -690,35 +1047,31 @@ function updateBranchingVisualizer() {
 visualSlider.addEventListener("input", updateBranchingVisualizer);
 
 /* ============================================================================
-   6. VIEW 03: BPE TOKENIZER X-RAY & CONCEPTS
+   8. VIEW 03: BPE TOKENIZER X-RAY & CONCEPTS
    ============================================================================ */
-const xrayInput = document.getElementById("xray-input");
-const xrayTokens = document.getElementById("xray-tokens");
-const xrayStats = document.getElementById("xray-stats");
-const xrayBadge = document.getElementById("xray-mode-badge");
-
 function heuristicTokenize(text) {
-  // Approximates GPT-2 pre-tokenization boundaries when model is not yet loaded
   const pattern = /'s|'t|'re|'ve|'m|'ll|'d| ?[A-Za-z]+| ?[0-9]+| ?[^\sA-Za-z0-9]+|\s+/g;
   const matches = text.match(pattern) || [];
-  return matches.map((tok) => ({
-    text: tok,
-    id: null
-  }));
+  return matches.map((tok) => ({ text: tok, id: null }));
 }
 
 function updateXRay() {
   const val = xrayInput.value;
-  let pieces = [];
+  if (!val) {
+    xrayBadge.textContent = getActiveEngine() ? `Exact ${SUPPORTED_MODELS[activeModelId].short} BPE` : "Heuristic BPE Preview";
+    xrayTokens.innerHTML = "";
+    xrayStats.textContent = "0 tokens · 0 characters · 0.00 chars/token";
+    return;
+  }
 
-  if (isModelReady && tokenizer) {
-    xrayBadge.textContent = "Exact DistilGPT-2 BPE";
-    const encoded = tokenizer(val);
+  let pieces = [];
+  const engine = getActiveEngine();
+
+  if (engine) {
+    xrayBadge.textContent = `Exact ${SUPPORTED_MODELS[activeModelId].short} BPE`;
+    const encoded = engine.tokenizer(val);
     const ids = Array.from(encoded.input_ids.data).map(Number);
-    pieces = ids.map((id) => ({
-      text: tokenizer.decode([id]),
-      id
-    }));
+    pieces = ids.map((id) => ({ text: engine.tokenizer.decode([id]), id }));
   } else {
     xrayBadge.textContent = "Heuristic BPE Preview";
     pieces = heuristicTokenize(val);
@@ -759,22 +1112,12 @@ function renderConcepts() {
 }
 
 /* ============================================================================
-   7. VIEW 04: KNOWLEDGE CHECK (QUIZ)
+   9. VIEW 04: KNOWLEDGE CHECK (QUIZ)
    ============================================================================ */
 let qIdx = 0;
 let qScore = 0;
 let qStreak = 0;
 let qAnswered = false;
-
-const qTextEl = document.getElementById("quiz-question");
-const qOptsEl = document.getElementById("quiz-options");
-const qFeedbackEl = document.getElementById("quiz-feedback");
-const qProgressText = document.getElementById("quiz-progress-text");
-const qProgressFill = document.getElementById("quiz-progress-fill");
-const qScoreEl = document.getElementById("quiz-score");
-const qStreakEl = document.getElementById("quiz-streak");
-const btnNextQ = document.getElementById("btn-next-question");
-const btnRestartQ = document.getElementById("btn-restart-quiz");
 
 function renderQuizQuestion() {
   qAnswered = false;
@@ -843,7 +1186,7 @@ btnNextQ.addEventListener("click", () => {
   }
 });
 
-btnRestartQ.addEventListener("click", () => {
+document.getElementById("btn-restart-quiz").addEventListener("click", () => {
   qIdx = 0;
   qScore = 0;
   qStreak = 0;
@@ -853,9 +1196,162 @@ btnRestartQ.addEventListener("click", () => {
 });
 
 /* ============================================================================
-   8. BOOTSTRAP INITIAL STATE
+   10. VIEW 05: HUMAN VS. AI AUTOCOMPLETE RACE
    ============================================================================ */
-renderAnalysis({ ...VERIFIED_SAMPLES["I love Python"], sentence: "I love Python", isLive: false });
+const MAX_RACE_ROUNDS = 5;
+let raceContext = RACE_PROMPTS[0].prefix;
+let raceRounds = [];
+
+RACE_PROMPTS.forEach((rp, idx) => {
+  const pill = document.createElement("button");
+  pill.type = "button";
+  pill.className = `pill-btn ${idx === 0 ? "active" : ""}`;
+  pill.textContent = rp.label;
+  pill.addEventListener("click", () => {
+    racePresetsEl.querySelectorAll(".pill-btn").forEach((b) => b.classList.remove("active"));
+    pill.classList.add("active");
+    racePrefixInput.value = rp.prefix;
+    resetRace(rp.prefix);
+  });
+  racePresetsEl.appendChild(pill);
+});
+
+function resetRace(prefixText = racePrefixInput.value.trim()) {
+  raceContext = prefixText || RACE_PROMPTS[0].prefix;
+  raceRounds = [];
+  raceContextDisplay.textContent = raceContext;
+  raceGuessInput.value = "";
+  raceGuessInput.disabled = false;
+  document.getElementById("btn-race-submit").disabled = false;
+  raceRoundBadge.textContent = `Round 1 / ${MAX_RACE_ROUNDS}`;
+  raceHumanPplEl.textContent = "—";
+  raceAiPplEl.textContent = "—";
+  raceFeedbackEl.hidden = true;
+  raceHistoryEl.innerHTML = `<div class="muted-xs">Submit your first guess to score Round 1 against ${SUPPORTED_MODELS[activeModelId].short}.</div>`;
+}
+
+document.getElementById("btn-race-start").addEventListener("click", () => {
+  resetRace(racePrefixInput.value.trim());
+});
+
+document.getElementById("btn-race-reset").addEventListener("click", () => {
+  resetRace(racePrefixInput.value.trim());
+});
+
+document.getElementById("race-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (raceRounds.length >= MAX_RACE_ROUNDS) return;
+
+  const rawGuess = raceGuessInput.value;
+  if (!rawGuess.trim()) return;
+
+  clearError();
+  const submitBtn = document.getElementById("btn-race-submit");
+  submitBtn.disabled = true;
+  setEngineStatus("analyzing", "Scoring guess...");
+
+  try {
+    const ready = await ensureModelLoaded(activeModelId);
+    if (!ready) {
+      submitBtn.disabled = false;
+      return;
+    }
+
+    const engine = getActiveEngine();
+    const { tokenizer } = engine;
+
+    const needsSpace = !/\s$/.test(raceContext) && !/^[\s.,!?;:)'"\]]/.test(rawGuess);
+    const formattedGuess = needsSpace ? ` ${rawGuess.trim()}` : rawGuess;
+
+    const ctxEncoded = tokenizer(raceContext);
+    const ctxIds = Array.from(ctxEncoded.input_ids.data).map(Number);
+    const guessEncoded = tokenizer(formattedGuess);
+    const guessIds = Array.from(guessEncoded.input_ids.data).map(Number);
+
+    if (ctxIds.length === 0) throw new Error("Starter prefix produced zero tokens.");
+    if (guessIds.length === 0) throw new Error("Guess produced zero tokens.");
+
+    const { logitsData, vocabSize } = await forwardCausalLM(engine, ctxIds, activeModelId);
+    const lastRow = logitsData.subarray(ctxIds.length * vocabSize, (ctxIds.length + 1) * vocabSize);
+    const probs = stableSoftmax(lastRow, 1.0);
+
+    const firstGuessId = guessIds[0];
+    const firstGuessText = tokenizer.decode([firstGuessId]);
+    const humanProb = Math.max(1e-12, probs[firstGuessId]);
+
+    const top5 = extractTopKFromLogits(lastRow, tokenizer, 1.0, 5);
+    const aiTop = top5[0];
+
+    raceRounds.push({
+      round: raceRounds.length + 1,
+      humanToken: firstGuessText,
+      humanProb,
+      aiToken: aiTop.text,
+      aiProb: aiTop.probability
+    });
+
+    raceContext += firstGuessText;
+    raceContextDisplay.textContent = raceContext;
+    raceGuessInput.value = "";
+
+    const humanPPL = Math.exp(
+      raceRounds.reduce((s, r) => s - Math.log(r.humanProb), 0) / raceRounds.length
+    );
+    const aiPPL = Math.exp(
+      raceRounds.reduce((s, r) => s - Math.log(r.aiProb), 0) / raceRounds.length
+    );
+
+    raceHumanPplEl.textContent = humanPPL >= 1000 ? humanPPL.toFixed(0) : humanPPL.toFixed(2);
+    raceAiPplEl.textContent = aiPPL.toFixed(2);
+
+    const top5Html = top5.map((t) => `<code>${escapeHtml(formatDisplayToken(t.text))} (${(t.probability * 100).toFixed(1)}%)</code>`).join(" ");
+    raceFeedbackEl.innerHTML = `
+      <div><strong>Round ${raceRounds.length}:</strong> Your token <code>${escapeHtml(formatDisplayToken(firstGuessText))}</code> had probability <strong>${(humanProb * 100).toFixed(2)}%</strong> · AI #1 was <code>${escapeHtml(formatDisplayToken(aiTop.text))}</code> (<strong>${(aiTop.probability * 100).toFixed(2)}%</strong>).</div>
+      <div style="margin-top: 8px;"><span class="muted-xs mono">AI TOP-5:</span> ${top5Html}</div>
+    `;
+    raceFeedbackEl.hidden = false;
+
+    raceHistoryEl.innerHTML = raceRounds.map((r) => `
+      <div class="race-round-item">
+        <div class="mono muted-xs">Round ${r.round}</div>
+        <div>You: <code>${escapeHtml(formatDisplayToken(r.humanToken))}</code> (${(r.humanProb * 100).toFixed(2)}%) · AI: <code>${escapeHtml(formatDisplayToken(r.aiToken))}</code> (${(r.aiProb * 100).toFixed(2)}%)</div>
+      </div>
+    `).join("");
+
+    if (raceRounds.length >= MAX_RACE_ROUNDS) {
+      raceRoundBadge.textContent = "Race Complete";
+      raceGuessInput.disabled = true;
+      submitBtn.disabled = true;
+      raceFeedbackEl.innerHTML += `<div class="callout-info" style="margin-top: 10px;"><strong>Final Result:</strong> Human PPL = <strong>${humanPPL.toFixed(2)}</strong> vs. AI Top-1 PPL = <strong>${aiPPL.toFixed(2)}</strong>.</div>`;
+    } else {
+      raceRoundBadge.textContent = `Round ${raceRounds.length + 1} / ${MAX_RACE_ROUNDS}`;
+      submitBtn.disabled = false;
+      raceGuessInput.focus();
+    }
+
+    updateModelHeaderUI();
+  } catch (err) {
+    showError(`Race step failed: ${err.message}`);
+    submitBtn.disabled = false;
+  }
+});
+
+/* ============================================================================
+   11. BOOTSTRAP INITIAL STATE
+   ============================================================================ */
+hydrateFromUrlParams();
+updateModelHeaderUI();
+
+const initialText = sentenceInput.value.trim();
+if (activeModelId === "Xenova/distilgpt2" && VERIFIED_SAMPLES[initialText]) {
+  renderAnalysis({ ...VERIFIED_SAMPLES[initialText], modelId: "Xenova/distilgpt2", sentence: initialText, isLive: false });
+} else if (initialText) {
+  renderAnalysis({ ...VERIFIED_SAMPLES["I love Python"], modelId: "Xenova/distilgpt2", sentence: "I love Python", isLive: false });
+  analyzeSentence(initialText);
+} else {
+  renderAnalysis({ ...VERIFIED_SAMPLES["I love Python"], modelId: "Xenova/distilgpt2", sentence: "I love Python", isLive: false });
+}
+
 renderSimTable();
 buildCurvePath();
 updateBranchingVisualizer();

@@ -25,26 +25,36 @@
       </div>
 
       <nav class="view-tabs" role="tablist" aria-label="Workspace views">
-        <button class="view-tab active" role="tab" aria-selected="true" data-view="analyzer">
+        <button type="button" id="tab-analyzer" class="view-tab active" role="tab" aria-selected="true" aria-controls="view-analyzer" data-view="analyzer">
           <span class="tab-num">01</span> Live Analyzer
         </button>
-        <button class="view-tab" role="tab" aria-selected="false" data-view="sandbox">
+        <button type="button" id="tab-sandbox" class="view-tab" role="tab" aria-selected="false" aria-controls="view-sandbox" data-view="sandbox">
           <span class="tab-num">02</span> Math &amp; Sandbox
         </button>
-        <button class="view-tab" role="tab" aria-selected="false" data-view="concepts">
+        <button type="button" id="tab-concepts" class="view-tab" role="tab" aria-selected="false" aria-controls="view-concepts" data-view="concepts">
           <span class="tab-num">03</span> BPE &amp; Concepts
         </button>
-        <button class="view-tab" role="tab" aria-selected="false" data-view="quiz">
+        <button type="button" id="tab-quiz" class="view-tab" role="tab" aria-selected="false" aria-controls="view-quiz" data-view="quiz">
           <span class="tab-num">04</span> Knowledge Check
+        </button>
+        <button type="button" id="tab-race" class="view-tab" role="tab" aria-selected="false" aria-controls="view-race" data-view="race">
+          <span class="tab-num">05</span> Human vs. AI
         </button>
       </nav>
 
       <div class="topbar-actions">
-        <div class="engine-pill" id="engine-pill" title="In-browser DistilGPT-2 ONNX status">
+        <select id="model-select" class="model-select" aria-label="Select language model" title="Both models share the exact 50,257-token GPT-2 BPE tokenizer for fair PPL comparison">
+          <option value="Xenova/distilgpt2">DistilGPT-2 (82M)</option>
+          <option value="Xenova/gpt2">GPT-2 Small (124M)</option>
+        </select>
+
+        <div class="engine-pill" id="engine-pill" title="In-browser ONNX engine &amp; cache status">
           <span class="status-dot" id="status-dot"></span>
           <span id="status-text">Preview Mode</span>
+          <span class="cache-tag" id="cache-badge" hidden>Cached</span>
         </div>
-        <button class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Switch Light / Dark Observatory">
+
+        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="Toggle light/dark theme" title="Switch Light / Dark Observatory">
           <span id="theme-icon">☾</span>
         </button>
       </div>
@@ -52,43 +62,51 @@
   </header>
 
   <main class="workspace">
-    <!-- Optional file:// warning banner -->
+    <!-- Optional file:// warning banner (runs even if ES modules are blocked on file://) -->
     <div id="protocol-banner" class="notice-banner" hidden>
-      <strong>Local file detected:</strong> Browser security blocks ES modules and AI model downloads over <code>file://</code>. Run <code>python3 -m http.server 8080</code> in this folder and open <code>http://localhost:8080</code> for live DistilGPT-2 inference.
+      <strong>Local file detected:</strong> Browser security blocks ES modules and AI model downloads over <code>file://</code>. Run <code>python3 -m http.server 8080</code> in this folder and open <code>http://localhost:8080</code> for live ONNX inference.
     </div>
+    <script>
+      if (window.location.protocol === "file:") {
+        document.getElementById("protocol-banner").hidden = false;
+      }
+    </script>
+
+    <!-- Global model download progress & error banner (visible across all tabs) -->
+    <div id="model-callout" class="model-callout" hidden>
+      <div class="callout-header">
+        <span id="callout-text">Downloading tokenizer &amp; quantized ONNX weights...</span>
+        <span class="mono" id="callout-pct">0%</span>
+      </div>
+      <div class="progress-track">
+        <div class="progress-fill" id="load-progress-fill"></div>
+      </div>
+    </div>
+
+    <div id="error-box" class="error-banner" role="alert" hidden></div>
 
     <!-- =====================================================================
          VIEW 01: LIVE ANALYZER WORKBENCH
          ===================================================================== -->
-    <section id="view-analyzer" class="view-panel active" role="tabpanel">
+    <section id="view-analyzer" class="view-panel active" role="tabpanel" aria-labelledby="tab-analyzer">
       <div class="view-intro">
         <div>
-          <span class="eyebrow">Real-Time Causal Inference · DistilGPT-2 (50,257 vocab)</span>
+          <span class="eyebrow" id="analyzer-eyebrow">Real-Time Causal Inference · DistilGPT-2 (50,257 shared BPE vocab)</span>
           <h1>Measure how surprised an AI is by every token.</h1>
         </div>
         <div class="intro-actions">
-          <button class="btn btn-outline" id="btn-toggle-compare" aria-pressed="false">
-            ⇄ Compare Two Sentences
+          <button type="button" class="btn btn-outline" id="btn-share-link" title="Copy URL with current prompt, model, and sampling settings">
+            🔗 Copy Share Link
+          </button>
+          <button type="button" class="btn btn-outline" id="btn-toggle-compare" aria-pressed="false">
+            ⇄ Compare A vs B
           </button>
         </div>
       </div>
 
-      <!-- Model download progress -->
-      <div id="model-callout" class="model-callout" hidden>
-        <div class="callout-header">
-          <span id="callout-text">Downloading DistilGPT-2 tokenizer &amp; quantized ONNX weights...</span>
-          <span class="mono" id="callout-pct">0%</span>
-        </div>
-        <div class="progress-track">
-          <div class="progress-fill" id="load-progress-fill"></div>
-        </div>
-      </div>
-
-      <div id="error-box" class="error-banner" hidden></div>
-
       <!-- Split Workbench Grid -->
       <div class="analyzer-grid">
-        <!-- LEFT COLUMN: Prompt Composer, Token Heatmap, Token Inspector, Table -->
+        <!-- LEFT COLUMN: Prompt Composer, Token Heatmap, Surprisal Sparkline, Token Inspector, Table -->
         <div class="col-main">
           <!-- Sentence Input Card -->
           <div class="panel">
@@ -102,36 +120,46 @@
               <div class="composer-footer">
                 <div class="sample-pills">
                   <span class="muted-xs">Samples:</span>
-                  <button class="pill-btn active" data-sentence="I love Python">I love Python</button>
-                  <button class="pill-btn" data-sentence="Python love I">Python love I</button>
-                  <button class="pill-btn" data-sentence="The capital of France is Paris">Capital of France</button>
+                  <button type="button" class="pill-btn active" data-sentence="I love Python">I love Python</button>
+                  <button type="button" class="pill-btn" data-sentence="Python love I">Python love I</button>
+                  <button type="button" class="pill-btn" data-sentence="The capital of France is Paris">Capital of France</button>
                 </div>
-                <button id="btn-calculate" class="btn btn-primary">
-                  Run Analysis →
-                </button>
+
+                <div class="composer-run-group">
+                  <label class="auto-toggle" title="Automatically re-run analysis 450ms after typing when the model is loaded">
+                    <input type="checkbox" id="auto-analyze-toggle">
+                    <span>Auto-analyze</span>
+                  </label>
+                  <button type="button" id="btn-calculate" class="btn btn-primary">
+                    Run Analysis →
+                  </button>
+                </div>
               </div>
             </div>
 
-            <!-- Optional Sentence B Compare Drawer -->
+            <!-- Optional Sentence B Compare Drawer + Context Experiments -->
             <div id="compare-box" class="compare-box" hidden>
               <div class="panel-header">
-                <label for="sentence-input-b" class="panel-title">Comparison Sequence (B)</label>
+                <label for="sentence-input-b" class="panel-title">Comparison Sequence (B) &amp; Context Experiments</label>
                 <span class="mono muted-xs">Compare perplexity side-by-side</span>
               </div>
+
+              <div id="context-exp-row" class="exp-pills"></div>
+
               <div class="compare-row">
                 <input id="sentence-input-b" class="text-input" type="text" value="Python love I" spellcheck="false" placeholder="Enter second sentence to compare...">
-                <button id="btn-compare" class="btn btn-secondary">Compare A vs B</button>
+                <button type="button" id="btn-compare" class="btn btn-secondary">Compare A vs B</button>
               </div>
               <div id="compare-result" class="compare-result" hidden></div>
             </div>
           </div>
 
-          <!-- Token Surprise Heatmap Strip -->
+          <!-- Token Surprise Heatmap Strip + Surprisal Trajectory Sparkline -->
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2 class="panel-title">Token Surprise Heatmap</h2>
-                <p class="panel-desc">Click any token to inspect its preceding context, probability, and bits of surprise (&minus;log<sub>2</sub> P). Spaces are shown as <code>␣</code>.</p>
+                <h2 class="panel-title">Token Surprise Heatmap &amp; Trajectory</h2>
+                <p class="panel-desc">Click any token or curve point to inspect preceding context, probability, and bits of surprise (&minus;log<sub>2</sub> P). Spaces are shown as <code>␣</code>.</p>
               </div>
               <div class="legend-strip" aria-label="Surprise color scale">
                 <span class="legend-item"><i class="dot dot-low"></i> Expected</span>
@@ -142,7 +170,16 @@
 
             <div class="token-heatmap" id="tokens-heatmap"></div>
 
-            <!-- Inline Token Inspector Drawer (No intrusive modal!) -->
+            <!-- Surprisal Trajectory SVG Sparkline -->
+            <div class="surprisal-chart-wrap">
+              <div class="chart-caption">
+                <span class="mono muted-xs">SURPRISAL TRAJECTORY (−log₂ P IN BITS PER TOKEN)</span>
+                <span class="mono muted-xs" id="peak-surprise-note">Peak: —</span>
+              </div>
+              <svg id="surprisal-svg" viewBox="0 0 640 120" class="surprisal-svg" aria-label="Token-level surprisal trajectory"></svg>
+            </div>
+
+            <!-- Inline Token Inspector Drawer -->
             <div class="inspector-drawer" id="token-inspector">
               <div class="inspector-head">
                 <div>
@@ -179,8 +216,14 @@
           <!-- Detailed Token Probability Table -->
           <div class="panel">
             <div class="panel-header">
-              <h2 class="panel-title">Token-by-Token Breakdown</h2>
-              <span class="mono muted-xs" id="token-count-badge">3 tokens</span>
+              <div>
+                <h2 class="panel-title">Token-by-Token Breakdown</h2>
+                <span class="mono muted-xs" id="token-count-badge">3 tokens</span>
+              </div>
+              <div class="export-actions">
+                <button type="button" id="btn-export-json" class="btn btn-sm btn-outline" title="Download full analysis as JSON">Export JSON</button>
+                <button type="button" id="btn-export-csv" class="btn btn-sm btn-outline" title="Download token table as CSV">Export CSV</button>
+              </div>
             </div>
             <div class="table-wrap">
               <table class="data-table">
@@ -201,7 +244,7 @@
           </div>
         </div>
 
-        <!-- RIGHT COLUMN: Perplexity Gauge, Math Steps, Next-Token Predictor w/ Temperature -->
+        <!-- RIGHT COLUMN: Perplexity Gauge, Math Steps, Next-Token Predictor w/ Temp + Top-K + Top-P -->
         <aside class="col-side">
           <!-- Perplexity Gauge Card -->
           <div class="panel gauge-panel">
@@ -210,7 +253,6 @@
               <span class="badge-tag" id="ppl-verdict-badge">Moderate Surprise</span>
             </div>
 
-            <!-- Custom SVG Semicircular Gauge -->
             <div class="svg-gauge-wrap">
               <svg viewBox="0 0 240 135" class="ppl-gauge-svg" aria-label="Perplexity Gauge">
                 <defs>
@@ -220,11 +262,8 @@
                     <stop offset="100%" stop-color="#DC2626"/>
                   </linearGradient>
                 </defs>
-                <!-- Background track -->
                 <path d="M 24 116 A 96 96 0 0 1 216 116" fill="none" stroke="var(--border)" stroke-width="14" stroke-linecap="round"/>
-                <!-- Colored arc -->
                 <path id="gauge-arc" d="M 24 116 A 96 96 0 0 1 216 116" fill="none" stroke="url(#gaugeGrad)" stroke-width="14" stroke-linecap="round" stroke-dasharray="301.6" stroke-dashoffset="150"/>
-                <!-- Needle -->
                 <g id="gauge-needle" transform="rotate(0, 120, 116)">
                   <line x1="120" y1="116" x2="120" y2="34" stroke="var(--ink)" stroke-width="2.5" stroke-linecap="round"/>
                   <circle cx="120" cy="116" r="6" fill="var(--ink)"/>
@@ -247,7 +286,6 @@
               </div>
             </div>
 
-            <!-- Compact 3-Step Math Derivation -->
             <div class="derivation-box">
               <div class="deriv-row">
                 <span>1. Product of (1/Pᵢ)</span>
@@ -265,31 +303,49 @@
             </div>
           </div>
 
-          <!-- Next-Token Distribution + Interactive Temperature + Click-to-Append -->
+          <!-- Next-Token Distribution + Temperature + Top-K + Top-P Nucleus Visualizer -->
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h2 class="panel-title">Next-Token Forecast</h2>
-                <p class="panel-desc">Click any candidate to append it to your sentence.</p>
+                <h2 class="panel-title">Next-Token Forecast &amp; Decoding</h2>
+                <p class="panel-desc">Click any active candidate to append it and re-analyze.</p>
               </div>
+              <span class="badge-tag mono" id="sampling-mass-badge">Kept: 100%</span>
             </div>
 
             <div class="temp-control">
               <div class="temp-head">
-                <label for="temp-slider" class="mono muted-xs">Sampling Temperature (T)</label>
+                <label for="temp-slider" class="mono muted-xs">Temperature (T)</label>
                 <span class="mono temp-val" id="temp-val">T = 1.00</span>
               </div>
               <input type="range" id="temp-slider" min="0.2" max="2.0" step="0.05" value="1.0" class="range-input">
               <div class="temp-hints muted-xs">
-                <span>0.2 Sharp / Greedy</span>
+                <span>0.2 Sharp</span>
                 <span>1.0 Raw</span>
-                <span>2.0 Flat / Creative</span>
+                <span>2.0 Creative</span>
+              </div>
+
+              <div class="sampling-sliders">
+                <div>
+                  <div class="temp-head">
+                    <label for="topk-slider" class="mono muted-xs">Top-K Cutoff</label>
+                    <span class="mono temp-val" id="topk-val">K = 8</span>
+                  </div>
+                  <input type="range" id="topk-slider" min="1" max="15" step="1" value="8" class="range-input">
+                </div>
+                <div>
+                  <div class="temp-head">
+                    <label for="topp-slider" class="mono muted-xs">Top-P (Nucleus)</label>
+                    <span class="mono temp-val" id="topp-val">P = 1.00</span>
+                  </div>
+                  <input type="range" id="topp-slider" min="0.10" max="1.00" step="0.05" value="1.00" class="range-input">
+                </div>
               </div>
             </div>
 
             <div id="top-next-container" class="next-list"></div>
             <div class="muted-xs mono" id="temp-scope-note" style="margin-top: 10px;">
-              Showing calibrated preview distribution (run live analysis for full 50,257-vocab logits).
+              Preview mode: sampling over top-8 snapshot. Run Analysis for full 50,257-vocab logits.
             </div>
           </div>
         </aside>
@@ -299,7 +355,7 @@
     <!-- =====================================================================
          VIEW 02: MATH & SANDBOX
          ===================================================================== -->
-    <section id="view-sandbox" class="view-panel" role="tabpanel" hidden>
+    <section id="view-sandbox" class="view-panel" role="tabpanel" aria-labelledby="tab-sandbox" hidden>
       <div class="view-intro">
         <div>
           <span class="eyebrow">Manual Probability Lab · Simulated Values</span>
@@ -309,27 +365,26 @@
       </div>
 
       <div class="sandbox-grid">
-        <!-- Token Probability Builder -->
         <div class="panel">
           <div class="panel-header">
             <h2 class="panel-title">Custom Sequence Builder</h2>
-            <button id="btn-add-sim-token" class="btn btn-sm btn-outline">+ Add Token</button>
+            <button type="button" id="btn-add-sim-token" class="btn btn-sm btn-outline">+ Add Token</button>
           </div>
 
           <div class="presets-grid">
-            <button class="preset-chip active" id="preset-a">
+            <button type="button" class="preset-chip active" id="preset-a">
               <strong>A · I love Python</strong>
               <span>0.5, 0.8, 0.2 → 2.32</span>
             </button>
-            <button class="preset-chip" id="preset-b">
+            <button type="button" class="preset-chip" id="preset-b">
               <strong>B · Uniform 1/8</strong>
               <span>8 × 0.125 → 8.00</span>
             </button>
-            <button class="preset-chip" id="preset-c">
+            <button type="button" class="preset-chip" id="preset-c">
               <strong>C · One Surprise</strong>
               <span>0.9, 0.9, 0.9, 0.01</span>
             </button>
-            <button class="preset-chip" id="preset-d">
+            <button type="button" class="preset-chip" id="preset-d">
               <strong>D · 4-Way Tie</strong>
               <span>4 × 0.25 → 4.00</span>
             </button>
@@ -361,7 +416,6 @@
           </div>
         </div>
 
-        <!-- Branching Factor & Curve Visualizer -->
         <div class="panel">
           <div class="panel-header">
             <h2 class="panel-title">Branching Factor Visualizer (1 / P)</h2>
@@ -376,7 +430,6 @@
             <input type="range" id="visual-slider" min="0.02" max="1.0" step="0.01" value="0.25" class="range-input">
           </div>
 
-          <!-- Visual Dice/Branching Slots -->
           <div class="branch-box">
             <div class="muted-xs mono" style="margin-bottom: 8px;">
               Equivalent to guessing blindly among <strong id="visual-slider-choices">4.0</strong> equally likely choices:
@@ -384,7 +437,6 @@
             <div id="branch-dots" class="branch-dots" aria-hidden="true"></div>
           </div>
 
-          <!-- Live SVG Curve of PPL = 1/P -->
           <div class="curve-wrap">
             <svg id="ppl-curve-svg" viewBox="0 0 360 190" class="curve-svg" aria-label="Perplexity equals 1 over P curve">
               <line x1="36" y1="160" x2="345" y2="160" stroke="var(--border)" stroke-width="1"/>
@@ -409,7 +461,7 @@
     <!-- =====================================================================
          VIEW 03: BPE TOKENIZATION X-RAY & CONCEPTS
          ===================================================================== -->
-    <section id="view-concepts" class="view-panel" role="tabpanel" hidden>
+    <section id="view-concepts" class="view-panel" role="tabpanel" aria-labelledby="tab-concepts" hidden>
       <div class="view-intro">
         <div>
           <span class="eyebrow">Subword Mechanics &amp; Core Theory</span>
@@ -417,29 +469,27 @@
         </div>
       </div>
 
-      <!-- Live BPE Tokenizer X-Ray -->
       <div class="panel" style="margin-bottom: 24px;">
         <div class="panel-header">
           <div>
             <h2 class="panel-title">Live Tokenizer X-Ray</h2>
-            <p class="panel-desc">Watch how text splits into words, prefixes, punctuation, and UTF-8 characters. Load DistilGPT-2 in Live Analyzer to use the exact 50,257-token GPT-2 BPE tokenizer.</p>
+            <p class="panel-desc">Watch how text splits into words, prefixes, punctuation, and UTF-8 characters. Load a model in Live Analyzer to use the exact 50,257-token GPT-2 BPE tokenizer.</p>
           </div>
           <span class="badge-tag mono" id="xray-mode-badge">Heuristic BPE Preview</span>
         </div>
 
-        <input type="text" id="xray-input" class="text-input" value="Unbelievable! GPT-2 tokenizes subwords like 'playing' &amp; emojis 🚀." placeholder="Type anything to inspect tokenization...">
+        <input type="text" id="xray-input" class="text-input" aria-label="Tokenizer X-Ray input" value="Unbelievable! GPT-2 tokenizes subwords like 'playing' &amp; emojis 🚀." placeholder="Type anything to inspect tokenization...">
         <div id="xray-tokens" class="xray-tokens"></div>
         <div class="xray-stats mono muted-xs" id="xray-stats"></div>
       </div>
 
-      <!-- Core Concepts Bento Grid -->
       <div class="concepts-grid" id="concepts-grid"></div>
     </section>
 
     <!-- =====================================================================
          VIEW 04: KNOWLEDGE CHECK (QUIZ)
          ===================================================================== -->
-    <section id="view-quiz" class="view-panel" role="tabpanel" hidden>
+    <section id="view-quiz" class="view-panel" role="tabpanel" aria-labelledby="tab-quiz" hidden>
       <div class="view-intro">
         <div>
           <span class="eyebrow">Interactive Mastery Check</span>
@@ -465,15 +515,84 @@
         <div class="quiz-feedback" id="quiz-feedback" hidden></div>
 
         <div class="quiz-actions">
-          <button id="btn-restart-quiz" class="btn btn-outline">Restart Quiz ↺</button>
-          <button id="btn-next-question" class="btn btn-primary" hidden>Next Question →</button>
+          <button type="button" id="btn-restart-quiz" class="btn btn-outline">Restart Quiz ↺</button>
+          <button type="button" id="btn-next-question" class="btn btn-primary" hidden>Next Question →</button>
         </div>
+      </div>
+    </section>
+
+    <!-- =====================================================================
+         VIEW 05: HUMAN VS. AI AUTOCOMPLETE RACE
+         ===================================================================== -->
+    <section id="view-race" class="view-panel" role="tabpanel" aria-labelledby="tab-race" hidden>
+      <div class="view-intro">
+        <div>
+          <span class="eyebrow">Interactive Cross-Entropy Challenge · Live Model</span>
+          <h1>Human vs. AI: Can you predict the next word better?</h1>
+        </div>
+        <button type="button" id="btn-race-reset" class="btn btn-outline">New 5-Round Race ↺</button>
+      </div>
+
+      <div class="race-grid">
+        <div class="panel">
+          <div class="panel-header">
+            <div>
+              <h2 class="panel-title">Choose a Starter Prefix</h2>
+              <p class="panel-desc">Guess the next word for 5 rounds. Lower perplexity wins!</p>
+            </div>
+            <span class="badge-tag mono" id="race-round-badge">Round 1 / 5</span>
+          </div>
+
+          <div id="race-presets" class="sample-pills" style="margin-bottom: 12px;"></div>
+
+          <div class="race-setup-row">
+            <input id="race-prefix-input" class="text-input" type="text" aria-label="Race starter prefix" value="Astronomers discovered a new exoplanet orbiting" placeholder="Enter any starting prefix...">
+            <button type="button" id="btn-race-start" class="btn btn-secondary">Set Prefix</button>
+          </div>
+
+          <div class="race-context-card">
+            <span class="mono muted-xs">CURRENT CONTEXT STREAM</span>
+            <div class="race-context-text" id="race-context-display">Astronomers discovered a new exoplanet orbiting</div>
+          </div>
+
+          <form id="race-form" class="race-guess-row">
+            <input id="race-guess-input" class="text-input" type="text" aria-label="Your next word guess" placeholder="Type your next word guess (e.g. a, stars, the)..." autocomplete="off">
+            <button id="btn-race-submit" type="submit" class="btn btn-primary">Submit Guess →</button>
+          </form>
+
+          <div id="race-round-feedback" class="race-feedback" hidden></div>
+        </div>
+
+        <aside class="panel">
+          <div class="panel-header">
+            <h2 class="panel-title">Live Scoreboard</h2>
+            <span class="mono muted-xs">Geometric Mean (1/P)</span>
+          </div>
+
+          <div class="race-scoreboard">
+            <div class="score-box">
+              <span class="muted-xs mono">HUMAN GUESS PPL</span>
+              <strong class="ppl-mini" id="race-human-ppl">—</strong>
+            </div>
+            <div class="score-box">
+              <span class="muted-xs mono">AI TOP-1 PPL</span>
+              <strong class="ppl-mini" id="race-ai-ppl">—</strong>
+            </div>
+          </div>
+
+          <div class="panel-header" style="margin-top: 16px; margin-bottom: 8px;">
+            <span class="mono muted-xs">ROUND HISTORY</span>
+          </div>
+          <div id="race-history-list" class="race-history">
+            <div class="muted-xs">Submit your first guess to load the active model and score Round 1.</div>
+          </div>
+        </aside>
       </div>
     </section>
   </main>
 
   <footer class="site-footer">
-    <span>Perplexity Lab · Client-side DistilGPT-2 via Transformers.js &amp; ONNX Runtime Web</span>
+    <span>Perplexity Lab · Client-side DistilGPT-2 &amp; GPT-2 via Transformers.js &amp; ONNX Runtime Web</span>
     <span class="mono">Zero backend · 100% browser-executed</span>
   </footer>
 

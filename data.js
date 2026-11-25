@@ -1,7 +1,22 @@
 /**
- * Verified DistilGPT-2 sample snapshots, sandbox presets, quiz questions,
- * and conceptual glossary entries for Perplexity Lab.
+ * Verified DistilGPT-2 sample snapshots, model metadata, context experiments,
+ * sandbox presets, race prompts, quiz questions, and conceptual glossary.
  */
+
+export const SUPPORTED_MODELS = {
+  "Xenova/distilgpt2": {
+    id: "Xenova/distilgpt2",
+    short: "DistilGPT-2",
+    label: "DistilGPT-2 (82M · 6 layers)",
+    vocabSize: 50257
+  },
+  "Xenova/gpt2": {
+    id: "Xenova/gpt2",
+    short: "GPT-2 Small",
+    label: "GPT-2 Small (124M · 12 layers)",
+    vocabSize: 50257
+  }
+};
 
 export const VERIFIED_SAMPLES = {
   "I love Python": {
@@ -65,6 +80,53 @@ export const VERIFIED_SAMPLES = {
     ]
   }
 };
+
+export const CONTEXT_EXPERIMENTS = [
+  {
+    id: "exp-order",
+    label: "Grammar Order",
+    a: "I love Python",
+    b: "Python love I",
+    insight: "Identical vocabulary, scrambled syntax — observe the order-of-magnitude perplexity spike."
+  },
+  {
+    id: "exp-context",
+    label: "Rich vs. Bare Context",
+    a: "The capital of France is Paris",
+    b: "Paris",
+    insight: "Compare predicting a fact in context versus an isolated city name."
+  },
+  {
+    id: "exp-code",
+    label: "Commented Code",
+    a: "# Python script\nprint('hello world')",
+    b: "print('hello world')",
+    insight: "Test whether a language-hint comment reduces surprise on subsequent code tokens."
+  }
+];
+
+export const RACE_PROMPTS = [
+  {
+    id: "race-news",
+    label: "Science Headline",
+    prefix: "Astronomers discovered a new exoplanet orbiting"
+  },
+  {
+    id: "race-code",
+    label: "Python Function",
+    prefix: "def fibonacci(n):\n    if n <="
+  },
+  {
+    id: "race-story",
+    label: "Story Opening",
+    prefix: "Late at night, the observatory doors slowly"
+  },
+  {
+    id: "race-fact",
+    label: "Geography Fact",
+    prefix: "The largest ocean on Earth is the"
+  }
+];
 
 export const SANDBOX_PRESETS = {
   "preset-a": {
@@ -199,10 +261,10 @@ export const CONCEPTS_DATA = [
     body: "Models don't read raw words or characters alone—they use Byte-Pair Encoding (BPE) to split text into frequent subword chunks. Leading spaces attach to the following token (shown here as ␣)."
   },
   {
-    tag: "DISTRIBUTION",
-    title: "Softmax & Temperature (T)",
+    tag: "DECODING",
+    title: "Temperature, Top-K & Top-P",
     formula: "pᵢ = exp(zᵢ / T) / ∑ exp(zⱼ / T)",
-    body: "Softmax turns raw neural logits zᵢ into positive probabilities summing to 1. Lowering temperature (T < 1) sharpens peaks toward greedy picks; raising it (T > 1) flattens uncertainty."
+    body: "Temperature scales logits before softmax; Top-K keeps only the K highest-probability tokens; Top-P (nucleus) keeps the smallest set whose cumulative probability reaches P."
   },
   {
     tag: "INFORMATION THEORY",
